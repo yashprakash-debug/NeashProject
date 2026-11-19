@@ -82,6 +82,8 @@ export type ConfidenceLevel = 'High' | 'Medium' | 'Low';
 
 export type TaskProgressStatus = 'Completed' | 'In Progress' | 'Pending' | 'Blocked';
 
+export type CitationMatchType = 'exact' | 'normalized' | 'unverified';
+
 export interface ExtractedClaim {
   id: string;
   projectId: string;
@@ -92,15 +94,19 @@ export interface ExtractedClaim {
   // Human-edited fields kept strictly separate
   editedTitle: string | null;
   editedDescription: string | null;
-  // Traceability
+  // Traceability & Programmatic Citation Verification
   sourceFilename: string;
   sourceId: string | null;
   sourceLocation: string;
   evidenceExcerpt: string;
+  citationVerified?: boolean;
+  citationMatchType?: CitationMatchType;
+  unverifiedQuote?: string | null;
   confidence: ConfidenceLevel;
   // Human verification state
   reviewStatus: ReviewStatus;
   reviewedBy: string | null;
+  reviewedByRole?: CollaboratorRole | null;
   reviewedAt: string | null;
   reviewerNote: string | null;
   // Optional structured metadata strictly derived from source
@@ -109,6 +115,80 @@ export interface ExtractedClaim {
   priority?: string;
   taskStatus?: TaskProgressStatus;
   origin: 'demo' | 'uploaded';
+  extractedByModel?: string;
+}
+
+export type ConflictType =
+  | 'Contradiction'
+  | 'Status Mismatch'
+  | 'Stale Fact'
+  | 'Passed Deadline'
+  | 'Undocumented Owner';
+
+export type ConflictSeverity = 'Critical' | 'Warning' | 'Info';
+
+export type ConflictStatus = 'Open' | 'Resolved' | 'Dismissed';
+
+export interface ReconciliationConflict {
+  id: string;
+  projectId: string;
+  type: ConflictType;
+  severity: ConflictSeverity;
+  status: ConflictStatus;
+  title: string;
+  summary: string;
+  sourceAFilename: string;
+  sourceALocation: string;
+  excerptA: string;
+  sourceBFilename: string | null;
+  sourceBLocation: string | null;
+  excerptB: string | null;
+  detectedAt: string;
+  resolvedBy?: string | null;
+  resolvedByRole?: CollaboratorRole | null;
+  resolvedAt?: string | null;
+  resolutionNote?: string | null;
+}
+
+export type CollaboratorRole =
+  | 'Outgoing Owner'
+  | 'Reviewer'
+  | 'Incoming Engineer';
+
+export interface RoleSignOff {
+  role: CollaboratorRole;
+  signedOff: boolean;
+  actorName: string | null;
+  signedAt: string | null;
+  note: string | null;
+}
+
+export interface AuditTrailEntry {
+  id: string;
+  projectId: string;
+  timestamp: string;
+  actorName: string;
+  actorRole: CollaboratorRole;
+  action:
+    | 'CLAIM_VERIFIED'
+    | 'CLAIM_REJECTED'
+    | 'CLAIM_REOPENED'
+    | 'CLAIM_EDITED'
+    | 'CONFLICT_RESOLVED'
+    | 'CONFLICT_DISMISSED'
+    | 'CONFLICT_REOPENED'
+    | 'ROLE_SIGNED_OFF'
+    | 'SIGNOFF_REVOKED'
+    | 'AI_EXTRACTION_RUN'
+    | 'WORKSPACE_SHARED';
+  targetId: string;
+  targetLabel: string;
+  detail: string;
+}
+
+export interface CollaboratorProfile {
+  name: string;
+  role: CollaboratorRole;
 }
 
 export interface ActivityLogItem {
@@ -117,7 +197,7 @@ export interface ActivityLogItem {
   title: string;
   detail: string;
   timestamp: string;
-  type: 'extraction' | 'verification' | 'source' | 'project' | 'report';
+  type: 'extraction' | 'verification' | 'source' | 'project' | 'report' | 'conflict' | 'signoff';
   read: boolean;
 }
 
@@ -137,10 +217,15 @@ export interface HandoverReportSnapshot {
     pendingCount: number;
     rejectedCount: number;
     sourcesCount: number;
+    openConflictsCount?: number;
+    resolvedConflictsCount?: number;
   };
   verifiedClaims: ExtractedClaim[];
   pendingClaims: ExtractedClaim[];
   rejectedCount: number;
+  conflicts?: ReconciliationConflict[];
+  signOffs?: Record<CollaboratorRole, RoleSignOff>;
+  auditTrail?: AuditTrailEntry[];
   sources: Array<{
     id: string;
     name: string;
@@ -164,7 +249,12 @@ export interface NeashAppState {
   activeProjectId: string;
   sources: SourceFile[];
   claims: ExtractedClaim[];
+  conflicts?: ReconciliationConflict[];
+  signOffs?: Record<string, Record<CollaboratorRole, RoleSignOff>>;
+  auditTrail?: AuditTrailEntry[];
   activities: ActivityLogItem[];
   reports: Record<string, HandoverReportSnapshot>;
   judgeChecklist?: JudgeChecklistProgress;
+  workspaceId?: string | null;
+  workspaceUpdatedAt?: string | null;
 }

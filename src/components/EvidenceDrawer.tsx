@@ -1,13 +1,15 @@
 import React, { useMemo } from 'react';
 import {
+  AlertTriangle,
   CheckCircle2,
   FileText,
   MapPin,
   RotateCcw,
+  ShieldCheck,
   X,
   XCircle,
 } from 'lucide-react';
-import { ExtractedClaim, SourceFile } from '../types/neash';
+import type { ExtractedClaim, SourceFile } from '../types/neash';
 import {
   CategoryLabel,
   ConfidenceIndicator,
@@ -56,7 +58,6 @@ export const EvidenceDrawer: React.FC<EvidenceDrawerProps> = ({
       return { found: false as const, before: '', match: excerpt, after: '' };
     }
 
-    // Extract generous surrounding window for clean document context
     const start = Math.max(0, idx - 260);
     const end = Math.min(
       matchedSource.content.length,
@@ -80,6 +81,7 @@ export const EvidenceDrawer: React.FC<EvidenceDrawerProps> = ({
   const hasEvidence =
     Boolean(claim.evidenceExcerpt?.trim()) &&
     claim.evidenceExcerpt.trim() !== 'No supporting evidence found.';
+  const isProgrammaticallyVerified = claim.citationVerified !== false && hasEvidence;
 
   return (
     <div
@@ -111,7 +113,7 @@ export const EvidenceDrawer: React.FC<EvidenceDrawerProps> = ({
             type="button"
             onClick={onClose}
             aria-label="Close evidence drawer"
-            className="p-2 text-[#94A3B8] hover:text-[#F8FAFC] rounded-lg hover:bg-white/[0.05] shrink-0"
+            className="p-2 text-[#94A3B8] hover:text-[#F8FAFC] rounded-lg hover:bg-white/[0.05] shrink-0 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -119,12 +121,45 @@ export const EvidenceDrawer: React.FC<EvidenceDrawerProps> = ({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* Programmatic Citation Verification Banner */}
+          <div
+            className={`p-3.5 rounded-xl border flex items-start gap-2.5 text-xs ${
+              isProgrammaticallyVerified
+                ? 'bg-[#22C55E]/[0.06] border-[#22C55E]/30 text-[#22C55E]'
+                : 'bg-[#EF4444]/[0.08] border-[#EF4444]/35 text-[#EF4444]'
+            }`}
+          >
+            {isProgrammaticallyVerified ? (
+              <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            )}
+            <div className="space-y-0.5">
+              <p className="font-semibold">
+                {isProgrammaticallyVerified
+                  ? `Citation Programmatically Verified (${
+                      claim.citationMatchType === 'normalized'
+                        ? 'Normalized Substring Match'
+                        : 'Exact Verbatim Match'
+                    })`
+                  : 'Unverified Quote — Exact Excerpt Not Found in Source'}
+              </p>
+              <p className="text-[#94A3B8]">
+                {isProgrammaticallyVerified
+                  ? `Substring verified character-for-character inside ${claim.sourceFilename}${
+                      claim.extractedByModel ? ` (extracted via ${claim.extractedByModel})` : ''
+                    }.`
+                  : 'Server-side verification rejected the proposed quote because it could not be matched verbatim against the uploaded document.'}
+              </p>
+            </div>
+          </div>
+
           {/* Extracted Interpretation */}
           <section>
             <p className="text-xs font-medium text-[#94A3B8] mb-2">
               {claim.origin === 'demo'
                 ? 'Extracted Interpretation (DEMO DATA)'
-                : 'Extracted Interpretation (From Uploaded File)'}
+                : `Extracted Interpretation (${claim.extractedByModel || 'Server AI'})`}
             </p>
             <div className="p-4 rounded-xl bg-[#111D30] border border-white/[0.07] space-y-2">
               <h3 className="text-sm font-semibold text-[#F8FAFC]">
@@ -194,8 +229,13 @@ export const EvidenceDrawer: React.FC<EvidenceDrawerProps> = ({
               Exact Supporting Excerpt
             </p>
             {!hasEvidence ? (
-              <div className="p-4 rounded-xl bg-[#111D30] border border-white/[0.07] text-sm text-[#94A3B8]">
-                No supporting evidence found.
+              <div className="p-4 rounded-xl bg-[#111D30] border border-[#EF4444]/30 space-y-2 text-sm text-[#94A3B8]">
+                <p className="font-medium text-[#EF4444]">No supporting evidence found.</p>
+                {claim.unverifiedQuote && (
+                  <p className="text-xs font-mono text-[#94A3B8]">
+                    Rejected AI quote: &ldquo;{claim.unverifiedQuote}&rdquo;
+                  </p>
+                )}
               </div>
             ) : (
               <div className="p-4 rounded-xl bg-[#111D30] border border-[#3B82F6]/35">

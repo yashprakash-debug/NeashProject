@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, X } from 'lucide-react';
 import { EvidenceDrawer } from './components/EvidenceDrawer';
 import { FirstDayPage } from './components/FirstDayPage';
 import { HandoverReportsPage } from './components/HandoverReportsPage';
@@ -7,29 +8,44 @@ import { OverviewPage } from './components/OverviewPage';
 import { ProjectsPage } from './components/ProjectsPage';
 import { SettingsPage } from './components/SettingsPage';
 import { Sidebar } from './components/Sidebar';
-import { SourcesPage } from './components/SourcesPage';
+import { SourcesPage, type ExtractionRunSummary } from './components/SourcesPage';
 import { TimelinePage } from './components/TimelinePage';
 import { TopBar } from './components/TopBar';
 import { VerificationCenterPage } from './components/VerificationCenterPage';
 import {
+  createDefaultProjectSignOffs,
   createEcommerceDemoClaims,
-  createSupportPortalDemoClaims,
   DEMO_PROJECTS,
   DEMO_SOURCES,
 } from './data/demoData';
-import {
+import type {
   ActivityLogItem,
+  AuditTrailEntry,
+  CollaboratorProfile,
+  CollaboratorRole,
+  ConflictStatus,
   ExtractedClaim,
   HandoverReportSnapshot,
   JudgeChecklistProgress,
   NavRoute,
   NeashAppState,
+  ReconciliationConflict,
+  RoleSignOff,
   SourceFile,
 } from './types/neash';
-import { extractClaimsFromUploadedSource } from './utils/fileExtractor';
 import {
+  createSharedWorkspace,
+  fetchSharedWorkspace,
+  pushWorkspaceEvent,
+  runCrossSourceReconciliation,
+  runServerAiExtraction,
+} from './utils/apiClient';
+import { reconcileProjectKnowledge } from './utils/reconciler';
+import {
+  loadCollaboratorProfile,
   loadWorkspaceState,
   resetWorkspaceStorage,
+  saveCollaboratorProfile,
   saveWorkspaceState,
 } from './utils/storage';
 
@@ -43,22 +59,129 @@ const DEFAULT_JUDGE_CHECKLIST: JudgeChecklistProgress = {
   guideCollapsed: false,
 };
 
-function waitMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function getUrlWorkspaceId(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('workspace')?.trim();
+    return id && /^[a-zA-Z0-9_-]{4,40}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+function setUrlWorkspaceId(workspaceId: string | null) {
+  try {
+    const url = new URL(window.location.href);
+    if (workspaceId) {
+      url.searchParams.set('workspace', workspaceId);
+    } else {
+      url.searchParams.delete('workspace');
+    }
+    window.history.replaceState({}, '', url.toString());
+  } catch {
+    // Ignore history restrictions cleanly
+  }
 }
 
 export default function App() {
   const [state, setState] = useState<NeashAppState>(() => loadWorkspaceState());
+  const [collaborator, setCollaborator] = useState<CollaboratorProfile>(() =>
+    loadCollaboratorProfile()
+  );
   const [activeRoute, setActiveRoute] = useState<NavRoute>('overview');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
-
-  // Drawers
   const [inspectedClaimId, setInspectedClaimId] = useState<string | null>(null);
+  const [isSyncingWorkspace, setIsSyncingWorkspace] = useState(false);
+  const [workspaceNotice, setWorkspaceNotice] = useState<string | null>(null);
 
+  const isMutatingRef = useRef(false);
+
+  // Persist local workspace cache & collaborator identity
   useEffect(() => {
     saveWorkspaceState(state);
   }, [state]);
+
+  const handleUpdateCollaborator = (profile: CollaboratorProfile) => {
+    setCollaborator(profile);
+    saveCollaboratorProfile(profile);
+  };
+
+  // Load shared workspace from ?workspace= on startup if present
+  useEffect(() => {
+    const urlWsId = getUrlWorkspaceId();
+    if (!urlWsId) return;
+
+    let cancelled = false;
+    setIsSyncingWorkspace(true);
+    fetchSharedWorkspace(urlWsId)
+      .then((ws) => {
+        if (cancelled) return;
+        setState((prev) => ({
+          ...ws.state,
+          activeProjectId:
+            ws.state.activeProjectId || prev.activeProjectId,
+          workspaceId: ws.workspaceId,
+          workspaceUpdatedAt: ws.updatedAt,
+        }));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setWorkspaceNotice(
+          err instanceof Error
+            ? `${err.message} Loaded local workspace instead.`
+            : 'Unable to load shared workspace link.'
+        );
+        setUrlWorkspaceId(null);
+      })
+      .finally(() => {
+        if (!cancelled) setIsSyncingWorkspace(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Poll shared workspace asynchronously every 4 seconds when active
+  const syncWorkspaceNow = useCallback(async () => {
+    const wsId = state.workspaceId;
+    if (!wsId || isMutatingRef.current) return;
+    setIsSyncingWorkspace(true);
+    try {
+      const ws = await fetchSharedWorkspace(wsId);
+      setState((prev) => {
+        if (
+          ws.updatedAt &&
+          prev.workspaceUpdatedAt &&
+          ws.updatedAt <= prev.workspaceUpdatedAt
+        ) {
+          return prev;
+        }
+        return {
+          ...ws.state,
+          activeProjectId: prev.activeProjectId,
+          judgeChecklist: prev.judgeChecklist,
+          workspaceId: ws.workspaceId,
+          workspaceUpdatedAt: ws.updatedAt,
+        };
+      });
+    } catch {
+      // Transient polling errors are ignored quietly
+    } finally {
+      setIsSyncingWorkspace(false);
+    }
+  }, [state.workspaceId]);
+
+  useEffect(() => {
+    if (!state.workspaceId) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void syncWorkspaceNow();
+      }
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [state.workspaceId, syncWorkspaceNow]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -113,6 +236,27 @@ export default function App() {
     [state.claims, activeProject]
   );
 
+  const projectConflicts = useMemo(
+    () =>
+      activeProject
+        ? (state.conflicts ?? []).filter((c) => c.projectId === activeProject.id)
+        : [],
+    [state.conflicts, activeProject]
+  );
+
+  const projectSignOffs: Record<CollaboratorRole, RoleSignOff> = useMemo(() => {
+    if (!activeProject) return createDefaultProjectSignOffs();
+    return state.signOffs?.[activeProject.id] ?? createDefaultProjectSignOffs();
+  }, [state.signOffs, activeProject]);
+
+  const projectAuditTrail = useMemo(
+    () =>
+      activeProject
+        ? (state.auditTrail ?? []).filter((a) => a.projectId === activeProject.id)
+        : [],
+    [state.auditTrail, activeProject]
+  );
+
   const inspectedClaim = useMemo(
     () => state.claims.find((c) => c.id === inspectedClaimId) ?? null,
     [state.claims, inspectedClaimId]
@@ -121,6 +265,11 @@ export default function App() {
   const pendingReviewCount = useMemo(
     () => projectClaims.filter((c) => c.reviewStatus === 'Pending Review').length,
     [projectClaims]
+  );
+
+  const openConflictCount = useMemo(
+    () => projectConflicts.filter((c) => c.status === 'Open').length,
+    [projectConflicts]
   );
 
   const appendActivity = (
@@ -133,8 +282,93 @@ export default function App() {
       timestamp: new Date().toISOString(),
       read: false,
     },
-    ...prev.activities.slice(0, 39),
+    ...prev.activities.slice(0, 49),
   ];
+
+  const appendAudit = (
+    prev: NeashAppState,
+    entry: Omit<AuditTrailEntry, 'id' | 'timestamp'>
+  ): AuditTrailEntry[] => [
+    {
+      ...entry,
+      id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: new Date().toISOString(),
+    },
+    ...(prev.auditTrail ?? []).slice(0, 149),
+  ];
+
+  const handleShareWorkspace = async (): Promise<string | null> => {
+    if (state.workspaceId) {
+      const url = new URL(window.location.href);
+      url.searchParams.set('workspace', state.workspaceId);
+      return url.toString();
+    }
+
+    setIsSyncingWorkspace(true);
+    setWorkspaceNotice(null);
+    try {
+      const ws = await createSharedWorkspace(
+        state,
+        collaborator.name,
+        collaborator.role
+      );
+      setUrlWorkspaceId(ws.workspaceId);
+      setState((prev) => ({
+        ...ws.state,
+        activeProjectId: prev.activeProjectId,
+        judgeChecklist: prev.judgeChecklist,
+        workspaceId: ws.workspaceId,
+        workspaceUpdatedAt: ws.updatedAt,
+      }));
+      const url = new URL(window.location.href);
+      url.searchParams.set('workspace', ws.workspaceId);
+      return url.toString();
+    } catch (err) {
+      setWorkspaceNotice(
+        err instanceof Error ? err.message : 'Failed to publish shared workspace.'
+      );
+      return null;
+    } finally {
+      setIsSyncingWorkspace(false);
+    }
+  };
+
+  const syncEventToServer = async (
+    eventType:
+      | 'CLAIM_REVIEW'
+      | 'CLAIM_EDIT'
+      | 'CONFLICT_UPDATE'
+      | 'ROLE_SIGNOFF'
+      | 'SOURCES_AND_CLAIMS_UPDATE'
+      | 'REPORT_GENERATED',
+    payload: Record<string, unknown>
+  ) => {
+    const wsId = state.workspaceId;
+    if (!wsId) return;
+    isMutatingRef.current = true;
+    try {
+      const ws = await pushWorkspaceEvent(
+        wsId,
+        eventType,
+        collaborator.name,
+        collaborator.role,
+        payload
+      );
+      setState((prev) => ({
+        ...ws.state,
+        activeProjectId: prev.activeProjectId,
+        judgeChecklist: prev.judgeChecklist,
+        workspaceId: ws.workspaceId,
+        workspaceUpdatedAt: ws.updatedAt,
+      }));
+    } catch (err) {
+      setWorkspaceNotice(
+        err instanceof Error ? err.message : 'Cloud sync failed.'
+      );
+    } finally {
+      isMutatingRef.current = false;
+    }
+  };
 
   const handleSelectProject = (projectId: string) => {
     setState((prev) => ({
@@ -170,12 +404,24 @@ export default function App() {
         ? prev.claims
         : [...prev.claims, ...createEcommerceDemoClaims(true)];
 
+      const nextSources = [...prev.sources, ...missingSources];
+      const reconciled = reconcileProjectKnowledge(
+        sampleProject,
+        nextSources,
+        restoredClaims,
+        (prev.conflicts ?? []).filter((c) => c.projectId === sampleProject.id)
+      );
+      const otherConflicts = (prev.conflicts ?? []).filter(
+        (c) => c.projectId !== sampleProject.id
+      );
+
       return {
         ...prev,
         projects: nextProjects,
         activeProjectId: sampleProject.id,
-        sources: [...prev.sources, ...missingSources],
+        sources: nextSources,
         claims: restoredClaims,
+        conflicts: [...otherConflicts, ...reconciled],
         judgeChecklist: markChecklistStep({ stepProject: true }, prev.judgeChecklist),
         activities: appendActivity(prev, {
           projectId: sampleProject.id,
@@ -191,9 +437,23 @@ export default function App() {
 
   const handleAddSources = (newSources: SourceFile[]) => {
     if (!activeProject || newSources.length === 0) return;
+
+    const updatedSources = [...newSources, ...state.sources];
+    const nextConflictsForProj = reconcileProjectKnowledge(
+      activeProject,
+      updatedSources,
+      state.claims,
+      projectConflicts
+    );
+    const otherConflicts = (state.conflicts ?? []).filter(
+      (c) => c.projectId !== activeProject.id
+    );
+    const allConflicts = [...otherConflicts, ...nextConflictsForProj];
+
     setState((prev) => ({
       ...prev,
-      sources: [...newSources, ...prev.sources],
+      sources: updatedSources,
+      conflicts: allConflicts,
       judgeChecklist: markChecklistStep({ stepSource: true }, prev.judgeChecklist),
       activities: appendActivity(prev, {
         projectId: activeProject.id,
@@ -204,132 +464,236 @@ export default function App() {
         type: 'source',
       }),
     }));
+
+    void syncEventToServer('SOURCES_AND_CLAIMS_UPDATE', {
+      sources: updatedSources,
+      conflicts: allConflicts,
+    });
   };
 
   const handleRemoveSource = (sourceId: string) => {
-    setState((prev) => {
-      const target = prev.sources.find((s) => s.id === sourceId);
-      return {
-        ...prev,
-        sources: prev.sources.filter((s) => s.id !== sourceId),
-        activities: target
-          ? appendActivity(prev, {
-              projectId: target.projectId,
-              title: 'Source Removed',
-              detail: `Removed ${target.name} from ingested sources.`,
-              type: 'source',
-            })
-          : prev.activities,
-      };
+    const target = state.sources.find((s) => s.id === sourceId);
+    const updatedSources = state.sources.filter((s) => s.id !== sourceId);
+    const targetProj = target
+      ? state.projects.find((p) => p.id === target.projectId)
+      : undefined;
+
+    const allConflicts = targetProj
+      ? [
+          ...(state.conflicts ?? []).filter(
+            (c) => c.projectId !== targetProj.id
+          ),
+          ...reconcileProjectKnowledge(
+            targetProj,
+            updatedSources,
+            state.claims,
+            (state.conflicts ?? []).filter((c) => c.projectId === targetProj.id)
+          ),
+        ]
+      : state.conflicts ?? [];
+
+    setState((prev) => ({
+      ...prev,
+      sources: updatedSources,
+      conflicts: allConflicts,
+      activities: target
+        ? appendActivity(prev, {
+            projectId: target.projectId,
+            title: 'Source Removed',
+            detail: `Removed ${target.name} from ingested sources.`,
+            type: 'source',
+          })
+        : prev.activities,
+    }));
+
+    void syncEventToServer('SOURCES_AND_CLAIMS_UPDATE', {
+      sources: updatedSources,
+      conflicts: allConflicts,
     });
   };
 
   const handleRunIntelligenceExtraction = async (
     onStageChange: (stageIndex: number, label: string) => void
-  ) => {
-    if (!activeProject) return;
-
-    const stages = [
-      'Reading ingested documents and verifying file structure...',
-      'Extracting decisions, tasks, blockers, risks, and milestones...',
-      'Linking verbatim source excerpts and page/line citations...',
-      'Populating Knowledge Hub and Verification Center...',
-    ];
-
-    for (let i = 0; i < stages.length; i++) {
-      onStageChange(i, stages[i]);
-      await waitMs(420);
+  ): Promise<ExtractionRunSummary> => {
+    if (!activeProject) {
+      throw new Error('No active project selected.');
     }
 
-    setState((prev) => {
-      const targetProject = prev.projects.find(
-        (p) => p.id === activeProject.id
+    const analyzableSources = projectSources.filter(
+      (s) =>
+        s.content.trim().length > 0 &&
+        s.status !== 'Unsupported' &&
+        s.status !== 'Error'
+    );
+
+    if (analyzableSources.length === 0) {
+      throw new Error(
+        'No readable source documents are attached to this project.'
       );
-      if (!targetProject) return prev;
+    }
 
-      const currentSources = prev.sources.filter(
-        (s) => s.projectId === targetProject.id
-      );
-      const existingClaimsForProject = prev.claims.filter(
-        (c) => c.projectId === targetProject.id
-      );
-      const existingClaimIds = new Set(existingClaimsForProject.map((c) => c.id));
+    // Prioritize Ready/unextracted sources (uploaded files or unextracted staged demo projects)
+    const unextractedSources = analyzableSources.filter(
+      (s) => s.status === 'Ready'
+    );
+    const targetsToExtract =
+      unextractedSources.length > 0 ? unextractedSources : analyzableSources;
 
-      // 1. Deterministic demo claims for preloaded demo projects (preserving any user reviews already made)
-      let demoClaimsToAdd: ExtractedClaim[] = [];
-      if (targetProject.id === 'proj-ecommerce') {
-        const hasDemoSources = currentSources.some((s) => s.origin === 'demo');
-        if (hasDemoSources) {
-          const freshDemo = createEcommerceDemoClaims(
-            existingClaimsForProject.length > 0
-          );
-          demoClaimsToAdd = freshDemo.filter(
-            (c) =>
-              !existingClaimIds.has(c.id) &&
-              currentSources.some((s) => s.id === c.sourceId)
-          );
-        }
-      } else if (targetProject.id === 'proj-support') {
-        const hasDemoSources = currentSources.some((s) => s.origin === 'demo');
-        if (hasDemoSources) {
-          const freshSupport = createSupportPortalDemoClaims();
-          demoClaimsToAdd = freshSupport.filter(
-            (c) =>
-              !existingClaimIds.has(c.id) &&
-              currentSources.some((s) => s.id === c.sourceId)
-          );
-        }
-      }
+    onStageChange(0, 'Preparing readable documents & checking payload limits...');
 
-      // 2. Real deterministic extraction for user-uploaded files
-      const uploadedClaimsToAdd: ExtractedClaim[] = [];
-      for (const src of currentSources) {
-        if (src.origin === 'uploaded') {
-          const extracted = extractClaimsFromUploadedSource(src);
-          for (const item of extracted) {
-            if (!existingClaimIds.has(item.id)) {
-              uploadedClaimsToAdd.push(item);
-            }
-          }
-        }
-      }
+    let extractedClaims: ExtractedClaim[] = [];
+    let verifiedCitations = 0;
+    let unverifiedCitations = 0;
+    let modelUsed = 'gemini-4-hydrogen';
 
-      const newlyAddedCount =
-        demoClaimsToAdd.length + uploadedClaimsToAdd.length;
-      const now = new Date().toISOString();
+    // Run real server-side Gemini extraction + programmatic citation verification
+    onStageChange(1, 'Extracting structured claims via Express + Gemini 4 Hydrogen...');
+    const extractResult = await runServerAiExtraction(
+      activeProject.id,
+      activeProject.name,
+      targetsToExtract
+    );
 
-      return {
-        ...prev,
-        projects: prev.projects.map((p) =>
-          p.id === targetProject.id
-            ? {
-                ...p,
-                intelligenceGenerated: true,
-                lastExtractedAt: now,
-                updatedAt: now,
-              }
-            : p
-        ),
-        sources: prev.sources.map((s) =>
-          s.projectId === targetProject.id &&
-          s.status !== 'Unsupported' &&
-          s.status !== 'Error'
-            ? { ...s, status: 'Processed' }
-            : s
-        ),
-        claims: [...prev.claims, ...demoClaimsToAdd, ...uploadedClaimsToAdd],
-        judgeChecklist: markChecklistStep({ stepExtraction: true }, prev.judgeChecklist),
-        activities: appendActivity(prev, {
-          projectId: targetProject.id,
-          title: 'Project Intelligence Generated',
-          detail:
-            newlyAddedCount > 0
-              ? `Extracted ${newlyAddedCount} new structured claims across ${currentSources.length} sources for ${targetProject.name}.`
-              : `Re-verified ${currentSources.length} sources for ${targetProject.name}; all grounded claims are up to date.`,
-          type: 'extraction',
-        }),
-      };
+    onStageChange(
+      2,
+      'Programmatically verifying every quote against source text...'
+    );
+    extractedClaims = extractResult.claims;
+    verifiedCitations = extractResult.meta.verifiedCitations;
+    unverifiedCitations = extractResult.meta.unverifiedCitations;
+    modelUsed = extractResult.meta.model;
+
+    // Deduplicate against existing claims cleanly (never overwrite human edits or reviews)
+    const existingIds = new Set(projectClaims.map((c) => c.id));
+    const existingFingerprints = new Set(
+      projectClaims.map(
+        (c) =>
+          `${c.sourceId || c.sourceFilename}:${c.originalTitle.toLowerCase().trim()}`
+      )
+    );
+    const newClaims = extractedClaims.filter((c) => {
+      const fp = `${c.sourceId || c.sourceFilename}:${c.originalTitle.toLowerCase().trim()}`;
+      return !existingIds.has(c.id) && !existingFingerprints.has(fp);
     });
+
+    const mergedClaims = [...state.claims, ...newClaims];
+
+    onStageChange(
+      3,
+      'Reconciling cross-source contradictions, deadlines & owners...'
+    );
+    const reconcileResult = await runCrossSourceReconciliation(
+      activeProject,
+      analyzableSources,
+      mergedClaims.filter((c) => c.projectId === activeProject.id),
+      projectConflicts,
+      true
+    );
+
+    const now = new Date().toISOString();
+    const updatedProjects = state.projects.map((p) =>
+      p.id === activeProject.id
+        ? {
+            ...p,
+            intelligenceGenerated: true,
+            lastExtractedAt: now,
+            updatedAt: now,
+          }
+        : p
+    );
+    const updatedSources = state.sources.map((s) =>
+      s.projectId === activeProject.id &&
+      s.status !== 'Unsupported' &&
+      s.status !== 'Error'
+        ? { ...s, status: 'Processed' as const }
+        : s
+    );
+    const otherConflicts = (state.conflicts ?? []).filter(
+      (c) => c.projectId !== activeProject.id
+    );
+    const allConflicts = [...otherConflicts, ...reconcileResult.conflicts];
+
+    setState((prev) => ({
+      ...prev,
+      projects: updatedProjects,
+      sources: updatedSources,
+      claims: mergedClaims,
+      conflicts: allConflicts,
+      judgeChecklist: markChecklistStep({ stepExtraction: true }, prev.judgeChecklist),
+      auditTrail: appendAudit(prev, {
+        projectId: activeProject.id,
+        actorName: collaborator.name,
+        actorRole: collaborator.role,
+        action: 'AI_EXTRACTION_RUN',
+        targetId: activeProject.id,
+        targetLabel: activeProject.name,
+        detail: `Server-side ${modelUsed} extracted ${newClaims.length} new claims (${verifiedCitations} citations verified, ${unverifiedCitations} flagged) and ${reconcileResult.conflicts.length} cross-source alerts.`,
+      }),
+      activities: appendActivity(prev, {
+        projectId: activeProject.id,
+        title: 'Server AI Intelligence Generated',
+        detail: `${newClaims.length} new grounded claims (${verifiedCitations} verified quotes) and ${reconcileResult.conflicts.length} cross-source checks completed.`,
+        type: 'extraction',
+      }),
+    }));
+
+    void syncEventToServer('SOURCES_AND_CLAIMS_UPDATE', {
+      projects: updatedProjects,
+      sources: updatedSources,
+      claims: mergedClaims,
+      conflicts: allConflicts,
+      auditEntry: {
+        projectId: activeProject.id,
+        actorName: collaborator.name,
+        actorRole: collaborator.role,
+        action: 'AI_EXTRACTION_RUN',
+        targetId: activeProject.id,
+        targetLabel: activeProject.name,
+        detail: `Server-side ${modelUsed} extracted ${newClaims.length} new claims (${verifiedCitations} verified quotes).`,
+      },
+    });
+
+    return {
+      extractedCount: newClaims.length,
+      verifiedCitations,
+      unverifiedCitations,
+      conflictsDetected: reconcileResult.conflicts.filter((c) => c.status === 'Open').length,
+      modelUsed,
+    };
+  };
+
+  const handleRunReconciliation = async (includeAi = true) => {
+    if (!activeProject) return;
+    try {
+      const res = await runCrossSourceReconciliation(
+        activeProject,
+        projectSources,
+        projectClaims,
+        projectConflicts,
+        includeAi
+      );
+      const otherConflicts = (state.conflicts ?? []).filter(
+        (c) => c.projectId !== activeProject.id
+      );
+      const allConflicts = [...otherConflicts, ...res.conflicts];
+      setState((prev) => ({
+        ...prev,
+        conflicts: allConflicts,
+        activities: appendActivity(prev, {
+          projectId: activeProject.id,
+          title: 'Cross-Source Reconciliation Complete',
+          detail: `Evaluated ${projectSources.length} documents: ${res.conflicts.filter((c) => c.status === 'Open').length} open alerts.`,
+          type: 'conflict',
+        }),
+      }));
+      void syncEventToServer('SOURCES_AND_CLAIMS_UPDATE', {
+        conflicts: allConflicts,
+      });
+    } catch (err) {
+      setWorkspaceNotice(
+        err instanceof Error ? err.message : 'Cross-source reconciliation failed.'
+      );
+    }
   };
 
   const updateClaimReviewStatus = (
@@ -348,19 +712,40 @@ export default function App() {
             ? {
                 ...c,
                 reviewStatus: status,
-                reviewedBy: status === 'Pending Review' ? null : 'Demo User',
+                reviewedBy: status === 'Pending Review' ? null : collaborator.name,
+                reviewedByRole:
+                  status === 'Pending Review' ? null : collaborator.role,
                 reviewedAt: status === 'Pending Review' ? null : now,
               }
             : c
         ),
         judgeChecklist: markChecklistStep({ stepVerification: true }, prev.judgeChecklist),
+        auditTrail: appendAudit(prev, {
+          projectId: target.projectId,
+          actorName: collaborator.name,
+          actorRole: collaborator.role,
+          action:
+            status === 'Verified'
+              ? 'CLAIM_VERIFIED'
+              : status === 'Rejected'
+              ? 'CLAIM_REJECTED'
+              : 'CLAIM_REOPENED',
+          targetId: claimId,
+          targetLabel: target.editedTitle ?? target.originalTitle,
+          detail: `${collaborator.name} (${collaborator.role}) set status to ${status}.`,
+        }),
         activities: appendActivity(prev, {
           projectId: target.projectId,
           title: activityTitle,
-          detail: `${target.editedTitle ?? target.originalTitle}`,
+          detail: `${target.editedTitle ?? target.originalTitle} · by ${collaborator.name}`,
           type: 'verification',
         }),
       };
+    });
+
+    void syncEventToServer('CLAIM_REVIEW', {
+      claimId,
+      reviewStatus: status,
     });
   };
 
@@ -394,19 +779,154 @@ export default function App() {
                 editedDescription,
                 reviewerNote: reviewerNote || c.reviewerNote,
                 reviewStatus: markVerified ? 'Verified' : c.reviewStatus,
-                reviewedBy: markVerified ? 'Demo User' : c.reviewedBy,
+                reviewedBy: markVerified ? collaborator.name : c.reviewedBy,
+                reviewedByRole: markVerified ? collaborator.role : c.reviewedByRole,
                 reviewedAt: markVerified ? now : c.reviewedAt,
               }
             : c
         ),
         judgeChecklist: markChecklistStep({ stepVerification: true }, prev.judgeChecklist),
+        auditTrail: appendAudit(prev, {
+          projectId: target.projectId,
+          actorName: collaborator.name,
+          actorRole: collaborator.role,
+          action: 'CLAIM_EDITED',
+          targetId: claimId,
+          targetLabel: editedTitle,
+          detail: `${collaborator.name} (${collaborator.role}) ${
+            markVerified ? 'edited and verified' : 'edited'
+          } claim.`,
+        }),
         activities: appendActivity(prev, {
           projectId: target.projectId,
           title: markVerified ? 'Claim Edited & Verified' : 'Claim Edited',
-          detail: editedTitle,
+          detail: `${editedTitle} · by ${collaborator.name}`,
           type: 'verification',
         }),
       };
+    });
+
+    void syncEventToServer('CLAIM_EDIT', {
+      claimId,
+      editedTitle,
+      editedDescription,
+      reviewerNote,
+      markVerified,
+    });
+  };
+
+  const handleUpdateConflictStatus = (
+    conflictId: string,
+    status: ConflictStatus,
+    note?: string
+  ) => {
+    const now = new Date().toISOString();
+    const trimmedNote = note?.trim() || null;
+    setState((prev) => {
+      const target = (prev.conflicts ?? []).find((c) => c.id === conflictId);
+      if (!target) return prev;
+      return {
+        ...prev,
+        conflicts: (prev.conflicts ?? []).map((c) =>
+          c.id === conflictId
+            ? {
+                ...c,
+                status,
+                resolvedBy: status === 'Open' ? null : collaborator.name,
+                resolvedByRole: status === 'Open' ? null : collaborator.role,
+                resolvedAt: status === 'Open' ? null : now,
+                resolutionNote:
+                  status === 'Open' ? null : trimmedNote || c.resolutionNote || null,
+              }
+            : c
+        ),
+        auditTrail: appendAudit(prev, {
+          projectId: target.projectId,
+          actorName: collaborator.name,
+          actorRole: collaborator.role,
+          action:
+            status === 'Resolved'
+              ? 'CONFLICT_RESOLVED'
+              : status === 'Dismissed'
+              ? 'CONFLICT_DISMISSED'
+              : 'CONFLICT_REOPENED',
+          targetId: conflictId,
+          targetLabel: target.title,
+          detail: `${collaborator.name} (${collaborator.role}) marked ${target.type} as ${status}${
+            trimmedNote ? `: ${trimmedNote}` : '.'
+          }`,
+        }),
+        activities: appendActivity(prev, {
+          projectId: target.projectId,
+          title: `Conflict ${status}`,
+          detail: `${target.title} · by ${collaborator.name}`,
+          type: 'conflict',
+        }),
+      };
+    });
+
+    void syncEventToServer('CONFLICT_UPDATE', {
+      conflictId,
+      status,
+      resolutionNote: trimmedNote || '',
+    });
+  };
+
+  const handleToggleRoleSignOff = (
+    role: CollaboratorRole,
+    signedOff: boolean,
+    note?: string
+  ) => {
+    if (!activeProject) return;
+    const now = new Date().toISOString();
+    const trimmedNote = note?.trim() || null;
+
+    setState((prev) => {
+      const prevMap = prev.signOffs ?? {};
+      const projMap = prevMap[activeProject.id] ?? createDefaultProjectSignOffs();
+      return {
+        ...prev,
+        signOffs: {
+          ...prevMap,
+          [activeProject.id]: {
+            ...projMap,
+            [role]: {
+              role,
+              signedOff,
+              actorName: signedOff ? collaborator.name : null,
+              signedAt: signedOff ? now : null,
+              note: signedOff ? trimmedNote : null,
+            },
+          },
+        },
+        judgeChecklist: markChecklistStep({ stepReport: true }, prev.judgeChecklist),
+        auditTrail: appendAudit(prev, {
+          projectId: activeProject.id,
+          actorName: collaborator.name,
+          actorRole: collaborator.role,
+          action: signedOff ? 'ROLE_SIGNED_OFF' : 'SIGNOFF_REVOKED',
+          targetId: `${activeProject.id}-${role}`,
+          targetLabel: `${role} Handover Sign-Off`,
+          detail: signedOff
+            ? `${collaborator.name} signed off as ${role}${
+                trimmedNote ? ` — "${trimmedNote}"` : '.'
+              }`
+            : `${collaborator.name} revoked ${role} sign-off.`,
+        }),
+        activities: appendActivity(prev, {
+          projectId: activeProject.id,
+          title: signedOff ? `${role} Signed Off` : `${role} Sign-Off Revoked`,
+          detail: `${collaborator.name} updated ${role} sign-off for ${activeProject.name}.`,
+          type: 'signoff',
+        }),
+      };
+    });
+
+    void syncEventToServer('ROLE_SIGNOFF', {
+      projectId: activeProject.id,
+      role,
+      signedOff,
+      note: trimmedNote || '',
     });
   };
 
@@ -438,10 +958,15 @@ export default function App() {
         pendingCount: pendingClaims.length,
         rejectedCount,
         sourcesCount: projectSources.length,
+        openConflictsCount: projectConflicts.filter((c) => c.status === 'Open').length,
+        resolvedConflictsCount: projectConflicts.filter((c) => c.status !== 'Open').length,
       },
       verifiedClaims,
       pendingClaims,
       rejectedCount,
+      conflicts: projectConflicts,
+      signOffs: projectSignOffs,
+      auditTrail: projectAuditTrail,
       sources: projectSources.map((s) => ({
         id: s.id,
         name: s.name,
@@ -464,6 +989,8 @@ export default function App() {
         type: 'report',
       }),
     }));
+
+    void syncEventToServer('REPORT_GENERATED', { report: snapshot });
   };
 
   const handleInspectClaim = (claim: ExtractedClaim) => {
@@ -482,6 +1009,7 @@ export default function App() {
   };
 
   const handleResetDemoData = () => {
+    setUrlWorkspaceId(null);
     const fresh = resetWorkspaceStorage();
     setState(fresh);
     setInspectedClaimId(null);
@@ -494,6 +1022,7 @@ export default function App() {
         activeRoute={activeRoute}
         onNavigate={setActiveRoute}
         pendingReviewCount={pendingReviewCount}
+        openConflictCount={openConflictCount}
         mobileOpen={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
       />
@@ -512,7 +1041,30 @@ export default function App() {
           onMarkAllRead={handleMarkAllActivitiesRead}
           onNavigate={setActiveRoute}
           onInspectClaim={handleInspectClaim}
+          collaborator={collaborator}
+          onUpdateCollaborator={handleUpdateCollaborator}
+          workspaceId={state.workspaceId ?? null}
+          isSyncingWorkspace={isSyncingWorkspace}
+          onShareWorkspace={handleShareWorkspace}
+          onSyncWorkspaceNow={syncWorkspaceNow}
         />
+
+        {workspaceNotice && (
+          <div className="bg-[#F59E0B]/10 border-b border-[#F59E0B]/30 px-4 lg:px-8 py-2.5 flex items-center justify-between gap-3 text-xs text-[#F59E0B] no-print">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{workspaceNotice}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setWorkspaceNotice(null)}
+              aria-label="Dismiss workspace notice"
+              className="p-1 rounded-md hover:bg-white/[0.06] cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-[1360px] w-full mx-auto">
           {activeRoute === 'overview' && (
@@ -523,8 +1075,11 @@ export default function App() {
               projectSources={projectSources}
               allClaims={state.claims}
               projectClaims={projectClaims}
+              projectConflicts={projectConflicts}
+              projectSignOffs={projectSignOffs}
               activities={state.activities}
               judgeChecklist={judgeChecklist}
+              workspaceId={state.workspaceId ?? null}
               onToggleGuide={() =>
                 setState((prev) => ({
                   ...prev,
@@ -579,8 +1134,11 @@ export default function App() {
             <KnowledgeHubPage
               activeProject={activeProject}
               claims={projectClaims}
+              conflicts={projectConflicts}
               globalSearchQuery={globalSearchQuery}
               onInspectEvidence={handleInspectClaim}
+              onUpdateConflictStatus={handleUpdateConflictStatus}
+              onRunReconciliation={handleRunReconciliation}
               onNavigate={setActiveRoute}
             />
           )}
@@ -589,6 +1147,8 @@ export default function App() {
             <VerificationCenterPage
               activeProject={activeProject}
               claims={projectClaims}
+              auditTrail={projectAuditTrail}
+              collaborator={collaborator}
               onAcceptClaim={handleAcceptClaim}
               onRejectClaim={handleRejectClaim}
               onReopenClaim={handleReopenClaim}
@@ -620,10 +1180,17 @@ export default function App() {
             <HandoverReportsPage
               activeProject={activeProject}
               projectClaims={projectClaims}
+              projectConflicts={projectConflicts}
+              projectSignOffs={projectSignOffs}
+              projectAuditTrail={projectAuditTrail}
+              collaborator={collaborator}
+              workspaceId={state.workspaceId ?? null}
               currentReport={
                 activeProject ? state.reports[activeProject.id] : undefined
               }
               onGenerateReport={handleGenerateReport}
+              onToggleRoleSignOff={handleToggleRoleSignOff}
+              onShareWorkspace={handleShareWorkspace}
               onPdfDownloaded={() =>
                 setState((prev) => ({
                   ...prev,

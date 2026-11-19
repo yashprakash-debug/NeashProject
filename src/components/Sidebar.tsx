@@ -11,13 +11,14 @@ import {
   UploadCloud,
   X,
 } from 'lucide-react';
-import { NavRoute } from '../types/neash';
+import type { NavRoute } from '../types/neash';
 import { NeashLogo } from './NeashLogo';
 
 interface SidebarProps {
   activeRoute: NavRoute;
   onNavigate: (route: NavRoute) => void;
   pendingReviewCount: number;
+  openConflictCount: number;
   mobileOpen: boolean;
   onCloseMobile: () => void;
 }
@@ -27,12 +28,14 @@ interface NavItem {
   label: string;
   icon: React.FC<{ className?: string }>;
   badgeCount?: number;
+  badgeColor?: string;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   activeRoute,
   onNavigate,
   pendingReviewCount,
+  openConflictCount,
   mobileOpen,
   onCloseMobile,
 }) => {
@@ -40,12 +43,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'projects', label: 'Projects', icon: FolderKanban },
     { id: 'sources', label: 'Sources', icon: UploadCloud },
-    { id: 'knowledge', label: 'Knowledge Hub', icon: BookOpen },
+    {
+      id: 'knowledge',
+      label: 'Knowledge Hub',
+      icon: BookOpen,
+      badgeCount: openConflictCount,
+      badgeColor: 'text-[#EF4444]',
+    },
     {
       id: 'verification',
       label: 'Verification Center',
       icon: CheckSquare,
       badgeCount: pendingReviewCount,
+      badgeColor: 'text-[#F59E0B]',
     },
     { id: 'reports', label: 'Handover Reports', icon: FileText },
     { id: 'settings', label: 'Settings', icon: Settings },
@@ -71,7 +81,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               type="button"
               onClick={() => handleSelect(item.id)}
-              className={`w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6] ${
+              className={`w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6] cursor-pointer ${
                 isActive
                   ? 'bg-[#3B82F6]/15 text-[#F8FAFC]'
                   : 'text-[#94A3B8] hover:text-[#F8FAFC] hover:bg-white/[0.04]'
@@ -86,7 +96,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span className="truncate">{item.label}</span>
               </span>
               {typeof item.badgeCount === 'number' && item.badgeCount > 0 && (
-                <span className="font-mono text-xs tabular-nums text-[#F59E0B] shrink-0">
+                <span
+                  className={`font-mono text-xs tabular-nums shrink-0 ${
+                    item.badgeColor || 'text-[#F59E0B]'
+                  }`}
+                >
                   {item.badgeCount}
                 </span>
               )}
@@ -103,7 +117,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={() => handleSelect('overview')}
-          className="text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6] rounded-md"
+          className="text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6] rounded-md cursor-pointer"
         >
           <NeashLogo />
         </button>
@@ -136,7 +150,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="p-4 border-t border-white/[0.07] text-xs text-[#94A3B8] leading-relaxed">
         <p className="font-medium text-[#F8FAFC]/90">Knowledge Should Never Leave With People.</p>
         <p className="mt-1 text-[11px] text-[#94A3B8]/80">
-          Browser-local prototype. Sample records are labeled DEMO DATA.
+          Server-verified AI extraction, conflict reconciliation &amp; multi-user handover sign-off.
         </p>
       </div>
     </div>
@@ -144,10 +158,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <>
-      {/* Desktop sidebar */}
       <aside className="hidden lg:block no-print">{sidebarContent}</aside>
 
-      {/* Mobile drawer */}
       {mobileOpen && (
         <div className="fixed inset-0 z-50 lg:hidden flex no-print">
           <div

@@ -6,7 +6,7 @@ import {
   HardDrive,
   RotateCcw,
 } from 'lucide-react';
-import { NeashAppState } from '../types/neash';
+import type { NeashAppState } from '../types/neash';
 import { getLocalStorageBytes } from '../utils/storage';
 
 interface SettingsPageProps {
@@ -40,10 +40,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     <div className="space-y-6 max-w-4xl">
       <div className="pb-5 border-b border-white/[0.07]">
         <h1 className="font-display text-2xl font-bold text-[#F8FAFC]">
-          Settings & Data Transparency
+          Settings &amp; Data Transparency
         </h1>
         <p className="text-sm text-[#94A3B8] mt-1">
-          Manage browser-local persistence, inspect demonstration boundaries, and reset workspace data.
+          Inspect Round 3 full-stack AI extraction, cross-source reconciliation, and workspace persistence.
         </p>
       </div>
 
@@ -58,18 +58,21 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         <div className="flex items-center gap-2">
           <Database className="w-4 h-4 text-[#60A5FA]" />
           <h2 className="font-display text-base font-semibold text-[#F8FAFC]">
-            Prototype Architecture & Local Persistence
+            Round 3 Architecture &amp; Data Grounding
           </h2>
         </div>
         <div className="space-y-2 text-sm text-[#94A3B8] leading-relaxed">
           <p>
-            NEASH stores projects, source metadata, extracted claims, human review decisions, edited claims, and generated handover reports in your browser&apos;s <span className="font-mono text-[#F8FAFC]">LocalStorage</span>.
+            <strong className="text-[#F8FAFC]">1. Server-Side AI Extraction with Citation Verification:</strong> Uploaded &amp; staged documents are analyzed on the Express backend via <span className="font-mono text-[#F8FAFC]">@google/genai</span> (<span className="font-mono text-[#60A5FA]">gemini-4-hydrogen</span>). Every proposed quote is programmatically verified against the raw source text before appearing in Knowledge Hub; unmatched quotes are flagged as unverified.
           </p>
           <p>
-            Refreshing the page preserves all your edits and verifications. Because this prototype operates strictly in browser-local storage without a remote database, <strong className="text-[#F8FAFC]">it does not support shared multi-user collaboration across devices</strong>.
+            <strong className="text-[#F8FAFC]">2. Cross-Source Contradiction &amp; Staleness Detection:</strong> NEASH reconciles meeting notes, CSV task trackers, architecture specs, chat exports, and uploaded addenda to surface contradicting decisions, status mismatches, passed deadlines, stale dates, and undocumented owners.
           </p>
           <p>
-            Preloaded project documents and sample extractions are explicitly labeled <span className="font-mono text-[#60A5FA]">DEMO DATA</span>. Real uploaded files (TXT, CSV, MD, JSON, and text-layer PDFs) are parsed locally in your browser without sending data to external APIs.
+            <strong className="text-[#F8FAFC]">3. Persistent Multi-User Workspaces &amp; Sign-Off:</strong> Clicking <strong className="text-[#F8FAFC]">Share Workspace</strong> persists your handover state on the Express server (<span className="font-mono text-[#F8FAFC]">/api/workspaces</span>) so Outgoing Owners, Reviewers, and Incoming Engineers can collaborate asynchronously via shared <span className="font-mono text-[#F8FAFC]">?workspace=</span> links with full audit trails.
+          </p>
+          <p>
+            Preloaded sample project artifacts remain clearly labeled <span className="font-mono text-[#60A5FA]">DEMO DATA</span>.
           </p>
         </div>
       </section>
@@ -83,7 +86,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           </h2>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-2 border-t border-white/[0.06]">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 pt-2 border-t border-white/[0.06]">
           <div>
             <p className="text-xs text-[#94A3B8]">Projects</p>
             <p className="mt-1 font-mono text-lg font-semibold text-[#F8FAFC] tabular-nums">
@@ -103,7 +106,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             </p>
           </div>
           <div>
-            <p className="text-xs text-[#94A3B8]">LocalStorage Used</p>
+            <p className="text-xs text-[#94A3B8]">Conflicts Tracked</p>
+            <p className="mt-1 font-mono text-lg font-semibold text-[#F8FAFC] tabular-nums">
+              {(state.conflicts ?? []).length}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-[#94A3B8]">Local Cache</p>
             <p className="mt-1 font-mono text-lg font-semibold text-[#F8FAFC] tabular-nums">
               {storageKb} KB
             </p>
@@ -118,7 +127,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             Workspace Maintenance
           </h2>
           <p className="text-xs text-[#94A3B8]">
-            Export a JSON backup of your current state or reset everything back to the initial demo dataset.
+            Export a JSON backup of your current state or reset your local session to the initial demonstration dataset.
           </p>
         </div>
 
@@ -158,7 +167,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               </h3>
             </div>
             <p className="text-sm text-[#94A3B8] leading-relaxed">
-              This will clear all uploaded files, claim edits, and verification statuses from LocalStorage and restore the original NEASH demonstration dataset.
+              This will clear local uploaded files, claim edits, and verification statuses and restore the original NEASH demonstration dataset.
             </p>
             <div className="pt-2 flex items-center justify-end gap-3">
               <button

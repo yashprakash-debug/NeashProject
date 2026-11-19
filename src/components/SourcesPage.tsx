@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   Database,
@@ -10,13 +11,22 @@ import {
   FileSpreadsheet,
   FileText,
   Loader2,
+  ShieldCheck,
   Sparkles,
   Trash2,
   UploadCloud,
   X,
 } from 'lucide-react';
 import { parseCsvRows, readUploadedFile } from '../utils/fileExtractor';
-import { NavRoute, Project, SourceFile } from '../types/neash';
+import type { NavRoute, Project, SourceFile } from '../types/neash';
+
+export interface ExtractionRunSummary {
+  extractedCount: number;
+  verifiedCitations: number;
+  unverifiedCitations: number;
+  conflictsDetected: number;
+  modelUsed: string;
+}
 
 interface SourcesPageProps {
   activeProject: Project | undefined;
@@ -27,15 +37,15 @@ interface SourcesPageProps {
   onSourceInspected?: () => void;
   onRunIntelligenceExtraction: (
     onStageChange: (stageIndex: number, label: string) => void
-  ) => Promise<void>;
+  ) => Promise<ExtractionRunSummary | void>;
   onNavigate: (route: NavRoute) => void;
 }
 
 const EXTRACTION_STAGES = [
-  'Reading ingested documents and verifying file structure...',
-  'Extracting decisions, tasks, blockers, risks, and milestones...',
-  'Linking verbatim source excerpts and page/line citations...',
-  'Populating Knowledge Hub and Verification Center...',
+  'Preparing readable documents & checking payload limits...',
+  'Extracting structured claims via Express + Gemini 4 Hydrogen...',
+  'Programmatically verifying every quote against source text...',
+  'Reconciling cross-source contradictions, deadlines & owners...',
 ];
 
 function formatBytes(bytes: number): string {
@@ -63,11 +73,14 @@ export const SourcesPage: React.FC<SourcesPageProps> = ({
     index: number;
     label: string;
   } | null>(null);
-  const [extractionCompleted, setExtractionCompleted] = useState(false);
+  const [extractionSummary, setExtractionSummary] =
+    useState<ExtractionRunSummary | null>(null);
+  const [extractionError, setExtractionError] = useState<string | null>(null);
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0 || !activeProject) return;
     setIsReadingFiles(true);
+    setExtractionError(null);
     try {
       const filesArray = Array.from(fileList);
       const parsed = await Promise.all(
@@ -85,12 +98,29 @@ export const SourcesPage: React.FC<SourcesPageProps> = ({
   const handleGenerateIntelligence = async () => {
     if (!activeProject || projectSources.length === 0 || isExtracting) return;
     setIsExtracting(true);
-    setExtractionCompleted(false);
+    setExtractionSummary(null);
+    setExtractionError(null);
     try {
-      await onRunIntelligenceExtraction((index, label) => {
+      const result = await onRunIntelligenceExtraction((index, label) => {
         setExtractionStage({ index, label });
       });
-      setExtractionCompleted(true);
+      if (result) {
+        setExtractionSummary(result);
+      } else {
+        setExtractionSummary({
+          extractedCount: 0,
+          verifiedCitations: 0,
+          unverifiedCitations: 0,
+          conflictsDetected: 0,
+          modelUsed: 'gemini-4-hydrogen',
+        });
+      }
+    } catch (err) {
+      setExtractionError(
+        err instanceof Error
+          ? err.message
+          : 'Server-side AI extraction failed. Please check your connection and try again.'
+      );
     } finally {
       setIsExtracting(false);
     }
@@ -134,7 +164,7 @@ export const SourcesPage: React.FC<SourcesPageProps> = ({
     return (
       <div className="p-8 rounded-xl bg-[#111D30] border border-white/[0.07] text-center">
         <p className="text-sm text-[#94A3B8]">
-          Select or create a project first to ingest sources.
+          Select a project first to ingest sources.
         </p>
       </div>
     );
@@ -148,13 +178,13 @@ export const SourcesPage: React.FC<SourcesPageProps> = ({
           <div className="flex items-center gap-2 text-xs text-[#94A3B8]">
             <span>{activeProject.name}</span>
             <span aria-hidden="true">·</span>
-            <span>Source Ingestion & Extraction</span>
+            <span>Server-Verified Extraction &amp; Ingestion</span>
           </div>
           <h1 className="font-display text-2xl font-bold text-[#F8FAFC] mt-1">
             Project Sources
           </h1>
           <p className="text-sm text-[#94A3B8] mt-1">
-            Upload PDF, TXT, CSV, MD, or JSON artifacts. Sample documents are labeled DEMO DATA; uploaded files are read locally in your browser.
+            Upload PDF, TXT, CSV, MD, or JSON files. Uploaded &amp; staged documents are analyzed by Express + Gemini 4 Hydrogen with programmatic verbatim citation verification.
           </p>
         </div>
 
@@ -170,7 +200,7 @@ export const SourcesPage: React.FC<SourcesPageProps> = ({
 
           <button
             type="button"
-            onClick={handleGenerateIntelligence}
+            onClick={() => void handleGenerateIntelligence()}
             disabled={projectSources.length === 0 || isExtracting}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] disabled:opacity-50 disabled:cursor-not-allowed text-xs font-semibold text-white transition-colors whitespace-nowrap cursor-pointer"
           >
@@ -181,15 +211,40 @@ export const SourcesPage: React.FC<SourcesPageProps> = ({
             )}
             <span>
               {isExtracting
-                ? 'Analyzing Sources...'
+                ? 'Running AI Extraction...'
                 : 'Generate Project Intelligence'}
             </span>
           </button>
         </div>
       </div>
 
+      {/* Explicit Server Error Alert (Never Silently Masked) */}
+      {extractionError && (
+        <div
+          role="alert"
+          className="p-4 rounded-xl bg-[#EF4444]/10 border border-[#EF4444]/35 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+        >
+          <div className="flex items-start gap-2.5 text-xs text-[#F8FAFC]">
+            <AlertTriangle className="w-4 h-4 text-[#EF4444] shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <p className="font-semibold text-[#EF4444]">
+                Server-Side AI Extraction Error
+              </p>
+              <p className="text-[#F8FAFC]/90 leading-relaxed">{extractionError}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleGenerateIntelligence()}
+            className="px-3.5 py-1.5 rounded-lg bg-[#EF4444]/20 hover:bg-[#EF4444]/30 text-xs font-semibold text-[#F8FAFC] whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            Retry Extraction
+          </button>
+        </div>
+      )}
+
       {/* Processing Progress Panel */}
-      {(isExtracting || extractionCompleted) && (
+      {(isExtracting || extractionSummary) && (
         <section
           aria-live="polite"
           className="p-5 rounded-xl bg-[#111D30] border border-[#3B82F6]/40 space-y-4"
@@ -199,16 +254,28 @@ export const SourcesPage: React.FC<SourcesPageProps> = ({
               {isExtracting ? (
                 <Loader2 className="w-4 h-4 text-[#60A5FA] animate-spin" />
               ) : (
-                <CheckCircle2 className="w-4 h-4 text-[#22C55E]" />
+                <ShieldCheck className="w-4 h-4 text-[#22C55E]" />
               )}
-              <h2 className="font-display text-sm font-semibold text-[#F8FAFC]">
-                {isExtracting
-                  ? 'Knowledge Extraction Pipeline Running'
-                  : 'Project Intelligence Generated'}
-              </h2>
+              <div>
+                <h2 className="font-display text-sm font-semibold text-[#F8FAFC]">
+                  {isExtracting
+                    ? 'Server-Side AI Extraction & Citation Verification Running'
+                    : 'Extraction & Cross-Source Reconciliation Complete'}
+                </h2>
+                {extractionSummary && !isExtracting && (
+                  <p className="text-xs text-[#94A3B8] mt-0.5 font-mono tabular-nums">
+                    {extractionSummary.extractedCount} new claims ·{' '}
+                    {extractionSummary.verifiedCitations} verbatim quotes verified ·{' '}
+                    {extractionSummary.unverifiedCitations > 0
+                      ? `${extractionSummary.unverifiedCitations} unverified quotes flagged · `
+                      : ''}
+                    {extractionSummary.conflictsDetected} cross-source alerts active
+                  </p>
+                )}
+              </div>
             </div>
 
-            {extractionCompleted && (
+            {extractionSummary && !isExtracting && (
               <div className="flex items-center gap-3">
                 <button
                   type="button"
@@ -231,7 +298,7 @@ export const SourcesPage: React.FC<SourcesPageProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             {EXTRACTION_STAGES.map((stageLabel, idx) => {
               const currentIdx = extractionStage?.index ?? 0;
-              const done = extractionCompleted || currentIdx > idx;
+              const done = Boolean(extractionSummary) && !isExtracting ? true : currentIdx > idx;
               const active = isExtracting && currentIdx === idx;
               return (
                 <div
@@ -287,7 +354,7 @@ export const SourcesPage: React.FC<SourcesPageProps> = ({
           Drag and drop project files here, or browse from your computer
         </h2>
         <p className="text-xs text-[#94A3B8] mt-1">
-          Supports multiple files: PDF (extracted via PDF.js), TXT, CSV, MD, and JSON.
+          Supports multiple files up to 4 MB each: PDF (PDF.js text layer), TXT, CSV, MD, and JSON.
         </p>
         <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
           <button
@@ -333,7 +400,7 @@ export const SourcesPage: React.FC<SourcesPageProps> = ({
             onClick={() => onNavigate('knowledge')}
             className="inline-flex items-center gap-1 text-xs font-medium text-[#60A5FA] hover:underline whitespace-nowrap cursor-pointer"
           >
-            <span>Next: Explore Knowledge Hub</span>
+            <span>Next: Explore Knowledge Hub &amp; Conflicts</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -467,7 +534,7 @@ export const SourcesPage: React.FC<SourcesPageProps> = ({
                 type="button"
                 onClick={() => setPreviewSource(null)}
                 aria-label="Close preview"
-                className="p-2 text-[#94A3B8] hover:text-[#F8FAFC] rounded-lg hover:bg-white/[0.05]"
+                className="p-2 text-[#94A3B8] hover:text-[#F8FAFC] rounded-lg hover:bg-white/[0.05] cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>

@@ -222,6 +222,69 @@ export function downloadHandoverPdf(report: HandoverReportSnapshot): void {
     'All extracted claims have been reviewed (0 pending claims).'
   );
 
+  // 11. Cross-Source Contradictions, Staleness & Multi-User Sign-Off
+  const conflicts = report.conflicts ?? [];
+  const openConflicts = conflicts.filter((c) => c.status === 'Open');
+  const resolvedConflicts = conflicts.filter((c) => c.status !== 'Open');
+
+  addSectionTitle(
+    '11',
+    'Cross-Source Reconciliation & Multi-User Sign-Off',
+    `${openConflicts.length} open conflict/staleness alerts · ${resolvedConflicts.length} resolved/dismissed.`
+  );
+
+  if (conflicts.length === 0) {
+    addParagraph('No cross-source contradictions, passed deadlines, or undocumented owners detected.');
+  } else {
+    for (const conflict of conflicts) {
+      const detail = `${conflict.summary} (${conflict.sourceAFilename}${
+        conflict.sourceBFilename ? ` vs ${conflict.sourceBFilename}` : ''
+      })`;
+      const descLines = doc.splitTextToSize(detail, maxWidth - 14);
+      checkPageBreak(descLines.length * 13 + 26);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(15, 23, 42);
+      doc.text(
+        `• [${conflict.severity} · ${conflict.type} · ${conflict.status}] ${conflict.title}`,
+        margin + 4,
+        y
+      );
+      y += 14;
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(51, 65, 85);
+      doc.text(descLines, margin + 14, y);
+      y += descLines.length * 12 + 6;
+    }
+  }
+
+  if (report.signOffs) {
+    checkPageBreak(70);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(15, 23, 42);
+    doc.text('Multi-Role Handover Sign-Off Status:', margin, y);
+    y += 14;
+    for (const role of ['Outgoing Owner', 'Reviewer', 'Incoming Engineer'] as const) {
+      const s = report.signOffs[role];
+      checkPageBreak(16);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9.5);
+      doc.setTextColor(51, 65, 85);
+      const statusText = s?.signedOff
+        ? `SIGNED OFF by ${s.actorName || 'User'} at ${
+            s.signedAt ? new Date(s.signedAt).toLocaleString() : ''
+          }${s.note ? ` — "${s.note}"` : ''}`
+        : 'Pending Sign-Off';
+      doc.text(`• ${role}: ${statusText}`, margin + 8, y);
+      y += 13;
+    }
+    y += 6;
+  }
+
   checkPageBreak(40);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);

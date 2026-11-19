@@ -797,7 +797,10 @@ export function createEcommerceDemoClaims(initialReviewPreset = true): Extracted
     ...item,
     editedTitle: null,
     editedDescription: null,
+    citationVerified: true,
+    citationMatchType: 'exact' as const,
     reviewedBy: item.reviewStatus !== 'Pending Review' ? 'Demo User' : null,
+    reviewedByRole: item.reviewStatus !== 'Pending Review' ? 'Reviewer' : null,
     reviewedAt: item.reviewStatus !== 'Pending Review' ? '2026-11-09T10:00:00Z' : null,
     reviewerNote:
       item.reviewStatus === 'Rejected'
@@ -935,7 +938,10 @@ export function createSupportPortalDemoClaims(): ExtractedClaim[] {
     ...item,
     editedTitle: null,
     editedDescription: null,
+    citationVerified: true,
+    citationMatchType: 'exact' as const,
     reviewedBy: null,
+    reviewedByRole: null,
     reviewedAt: null,
     reviewerNote: null,
     origin: 'demo',
@@ -972,14 +978,61 @@ export const INITIAL_ACTIVITIES: ActivityLogItem[] = [
   },
 ];
 
+export function createDefaultProjectSignOffs() {
+  return {
+    'Outgoing Owner': {
+      role: 'Outgoing Owner' as const,
+      signedOff: false,
+      actorName: null,
+      signedAt: null,
+      note: null,
+    },
+    Reviewer: {
+      role: 'Reviewer' as const,
+      signedOff: false,
+      actorName: null,
+      signedAt: null,
+      note: null,
+    },
+    'Incoming Engineer': {
+      role: 'Incoming Engineer' as const,
+      signedOff: false,
+      actorName: null,
+      signedAt: null,
+      note: null,
+    },
+  };
+}
+
 export function createInitialDemoState(): NeashAppState {
+  const claims = createEcommerceDemoClaims(true);
   return {
     projects: DEMO_PROJECTS.map((p) => ({ ...p })),
     activeProjectId: 'proj-ecommerce',
     sources: DEMO_SOURCES.map((s) => ({ ...s })),
-    claims: createEcommerceDemoClaims(true),
+    claims,
+    conflicts: [],
+    signOffs: {
+      'proj-ecommerce': createDefaultProjectSignOffs(),
+      'proj-support': createDefaultProjectSignOffs(),
+    },
+    auditTrail: [
+      {
+        id: 'aud-init-1',
+        projectId: 'proj-ecommerce',
+        timestamp: '2026-11-09T10:00:00Z',
+        actorName: 'Rahul Sharma',
+        actorRole: 'Outgoing Owner',
+        action: 'CLAIM_VERIFIED',
+        targetId: 'claim-ecom-01',
+        targetLabel: 'PostgreSQL selected as the primary database',
+        detail: 'Baseline architecture claims pre-verified in DEMO DATA.',
+      },
+    ],
     activities: INITIAL_ACTIVITIES.map((a) => ({ ...a })),
     reports: {},
+    workspaceId: null,
+    workspaceUpdatedAt: null,
   };
 }
 

@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   CheckSquare,
@@ -11,13 +12,17 @@ import {
   FolderOpen,
   Sparkles,
   UploadCloud,
+  UserCheck,
 } from 'lucide-react';
-import {
+import type {
   ActivityLogItem,
+  CollaboratorRole,
   ExtractedClaim,
   JudgeChecklistProgress,
   NavRoute,
   Project,
+  ReconciliationConflict,
+  RoleSignOff,
   SourceFile,
 } from '../types/neash';
 import { ProjectStatusLabel } from './StatusSignals';
@@ -29,8 +34,11 @@ interface OverviewPageProps {
   projectSources: SourceFile[];
   allClaims: ExtractedClaim[];
   projectClaims: ExtractedClaim[];
+  projectConflicts: ReconciliationConflict[];
+  projectSignOffs: Record<CollaboratorRole, RoleSignOff>;
   activities: ActivityLogItem[];
   judgeChecklist: JudgeChecklistProgress;
+  workspaceId: string | null;
   onToggleGuide: () => void;
   onSelectProject: (projectId: string) => void;
   onNavigate: (route: NavRoute) => void;
@@ -45,15 +53,17 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   projectSources,
   allClaims,
   projectClaims,
+  projectConflicts,
+  projectSignOffs,
   activities,
   judgeChecklist,
+  workspaceId,
   onToggleGuide,
   onSelectProject,
   onNavigate,
   onLoadSampleProject,
   onInspectSampleEvidence,
 }) => {
-  // Dynamically computed KPIs from real application state
   const totalProjects = projects.length;
   const totalSources = allSources.length;
 
@@ -69,11 +79,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   const activeBlockers = nonRejectedActiveClaims.filter(
     (c) => c.category === 'Blocker'
   ).length;
-  const knowledgeGaps = nonRejectedActiveClaims.filter(
-    (c) => c.category === 'Knowledge Gap'
+  const openConflicts = projectConflicts.filter(
+    (c) => c.status === 'Open'
   ).length;
 
-  // Verification metrics for active project
   const totalExtracted = projectClaims.length;
   const verifiedCount = projectClaims.filter(
     (c) => c.reviewStatus === 'Verified'
@@ -84,6 +93,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   const rejectedCount = projectClaims.filter(
     (c) => c.reviewStatus === 'Rejected'
   ).length;
+
+  const signedRolesCount = (
+    ['Outgoing Owner', 'Reviewer', 'Incoming Engineer'] as CollaboratorRole[]
+  ).filter((r) => projectSignOffs[r]?.signedOff).length;
 
   const reviewedPct =
     totalExtracted > 0
@@ -96,7 +109,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
     {
       key: 'stepProject' as const,
       title: '1. Switch Demo Projects',
-      desc: 'Compare E-commerce Platform (pre-extracted) and Customer Support Portal (ready to extract).',
+      desc: 'Compare E-commerce Platform (pre-extracted) and Customer Support Portal (ready for server AI extraction).',
       done: judgeChecklist.stepProject,
       ctaLabel: 'Open Projects',
       action: () => onNavigate('projects'),
@@ -119,23 +132,23 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
     {
       key: 'stepSource' as const,
       title: '2. Inspect & Upload Sources',
-      desc: 'Preview the 5 preloaded DEMO DATA docs or upload a real TXT/CSV/MD/JSON/PDF.',
+      desc: 'Preview DEMO DATA docs or upload a real TXT/CSV/MD/JSON/PDF artifact.',
       done: judgeChecklist.stepSource,
       ctaLabel: 'Open Sources',
       action: () => onNavigate('sources'),
     },
     {
       key: 'stepExtraction' as const,
-      title: '3. Generate Intelligence',
-      desc: 'Run the extraction pipeline on staged project documents.',
+      title: '3. Run Server AI & Citation Check',
+      desc: 'Extract structured claims via Express + Gemini 4 Hydrogen with verbatim quote verification.',
       done: judgeChecklist.stepExtraction,
       ctaLabel: 'Go to Extraction',
       action: () => onNavigate('sources'),
     },
     {
       key: 'stepEvidence' as const,
-      title: '4. Trace Source Evidence',
-      desc: 'Inspect exact verbatim quotes highlighted inside the original document.',
+      title: '4. Inspect Evidence & Conflicts',
+      desc: 'Trace exact quotes in Knowledge Hub and reconcile cross-source contradictions & stale facts.',
       done: judgeChecklist.stepEvidence,
       ctaLabel: 'Knowledge Hub',
       action: () => onNavigate('knowledge'),
@@ -145,16 +158,16 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
     },
     {
       key: 'stepVerification' as const,
-      title: '5. Verify, Edit, or Reject',
-      desc: 'Triage claims in Verification Center; human edits stay separate from AI text.',
+      title: '5. Verify & Collaborate by Role',
+      desc: 'Triage claims as Outgoing Owner, Reviewer, or Incoming Engineer with full audit logs.',
       done: judgeChecklist.stepVerification,
       ctaLabel: 'Verify Claims',
       action: () => onNavigate('verification'),
     },
     {
       key: 'stepReport' as const,
-      title: '6. Generate & Export PDF',
-      desc: 'Compile the 10-section handover report and download as a real PDF.',
+      title: '6. Sign Off, Share & Export PDF',
+      desc: 'Collect 3-role handover sign-offs, share workspace link, and download the full PDF report.',
       done: judgeChecklist.stepReport,
       ctaLabel: 'Handover Report',
       action: () => onNavigate('reports'),
@@ -167,10 +180,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
     {
       label: 'Total Projects',
       value: totalProjects,
-      sub: 'Active continuity workspaces',
+      sub: 'Continuity workspaces',
     },
     {
-      label: 'Uploaded Sources',
+      label: 'Ingested Sources',
       value: totalSources,
       sub: `${projectSources.length} in active project`,
     },
@@ -190,9 +203,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
       sub: 'Unresolved delivery blockers',
     },
     {
-      label: 'Knowledge Gaps',
-      value: knowledgeGaps,
-      sub: 'Missing ownership or docs',
+      label: 'Open Conflicts',
+      value: openConflicts,
+      sub: 'Cross-source & stale alerts',
     },
   ];
 
@@ -207,6 +220,14 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
         <div className="space-y-2 max-w-2xl">
           <div className="flex flex-wrap items-center gap-2 text-xs text-[#94A3B8]">
             <span>Active Handover Workspace</span>
+            {workspaceId && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono text-[#22C55E]">
+                  Shared ({workspaceId})
+                </span>
+              </>
+            )}
             {activeProject?.isDemoData && (
               <>
                 <span aria-hidden="true">·</span>
@@ -281,7 +302,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
               </span>
             </div>
             <p className="text-xs text-[#94A3B8]">
-              Follow these six steps to evaluate the complete NEASH handover workflow end-to-end.
+              Follow these six steps to evaluate server-verified AI extraction, cross-source reconciliation, and multi-user sign-off.
             </p>
           </div>
 
@@ -357,7 +378,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
         )}
       </section>
 
-      {/* Prompt banner when active project has sources but hasn't run extraction yet */}
+      {/* Alert banners: Unextracted staged sources OR Open Cross-Source Conflicts */}
       {activeProject && projectSources.length > 0 && totalExtracted === 0 && (
         <div className="p-5 rounded-xl bg-[#111D30] border border-[#3B82F6]/35 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="space-y-1">
@@ -365,7 +386,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
               {projectSources.length} source documents staged for {activeProject.name}
             </h2>
             <p className="text-xs text-[#94A3B8]">
-              Run knowledge extraction to generate structured decisions, tasks, blockers, and evidence links.
+              Run server-side Gemini extraction + programmatic citation verification to analyze these documents.
             </p>
           </div>
           <button
@@ -375,6 +396,28 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
           >
             <Sparkles className="w-3.5 h-3.5" />
             <span>Go to Intelligence Extraction</span>
+          </button>
+        </div>
+      )}
+
+      {openConflicts > 0 && (
+        <div className="p-4 rounded-xl bg-[#F59E0B]/[0.08] border border-[#F59E0B]/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-xs text-[#F8FAFC]">
+            <AlertTriangle className="w-4 h-4 text-[#F59E0B] shrink-0" />
+            <span>
+              <strong className="text-[#F59E0B] tabular-nums">
+                {openConflicts} cross-source contradiction, passed deadline, or undocumented owner alert{openConflicts === 1 ? '' : 's'}
+              </strong>{' '}
+              detected for {activeProject?.name}.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('knowledge')}
+            className="inline-flex items-center gap-1 text-xs font-semibold text-[#F59E0B] hover:underline whitespace-nowrap cursor-pointer"
+          >
+            <span>Inspect Conflicts in Knowledge Hub</span>
+            <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
@@ -401,28 +444,33 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
         </div>
       </section>
 
-      {/* Main 2-column Grid: Verification Progress + Recent Activity */}
+      {/* Main 2-column Grid: Verification + Sign-Off Progress | Recent Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Verification Progress */}
         <section className="lg:col-span-2 p-6 rounded-xl bg-[#111D30] border border-white/[0.07] space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="font-display text-base font-semibold text-[#F8FAFC]">
-                Human Verification Progress
+                Human Verification &amp; Role Sign-Off Progress
               </h2>
               <p className="text-xs text-[#94A3B8] mt-0.5">
-                Calculated directly from current extracted claims in{' '}
+                Calculated directly from current extracted claims and role approvals in{' '}
                 {activeProject?.name ?? 'active project'}.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('verification')}
-              className="inline-flex items-center gap-1 text-xs font-medium text-[#60A5FA] hover:underline whitespace-nowrap cursor-pointer"
-            >
-              <span>Open Verification Center</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-3">
+              <span className="inline-flex items-center gap-1.5 text-xs font-mono text-[#60A5FA] tabular-nums">
+                <UserCheck className="w-3.5 h-3.5" />
+                {signedRolesCount}/3 Signed Off
+              </span>
+              <button
+                type="button"
+                onClick={() => onNavigate('verification')}
+                className="inline-flex items-center gap-1 text-xs font-medium text-[#60A5FA] hover:underline whitespace-nowrap cursor-pointer"
+              >
+                <span>Open Verification Center</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
 
           {totalExtracted === 0 ? (
@@ -444,7 +492,6 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
                 </span>
               </div>
 
-              {/* Segmented Progress Bar */}
               <div
                 className="h-2.5 w-full rounded-md bg-[#080D19] overflow-hidden flex"
                 role="progressbar"
@@ -475,7 +522,6 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
                 )}
               </div>
 
-              {/* Exact Counts */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-2">
                 <div>
                   <p className="text-xs text-[#94A3B8]">Extracted</p>
@@ -549,7 +595,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
               Project Status Overview
             </h2>
             <p className="text-xs text-[#94A3B8] mt-0.5">
-              All continuity handovers persisted in browser LocalStorage.
+              {workspaceId
+                ? `Synced to persistent shared workspace (${workspaceId}) and cached locally.`
+                : 'Persisted locally with one-click shareable server workspace links for multi-user sign-off.'}
             </p>
           </div>
           <div className="flex items-center gap-3">
